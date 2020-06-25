@@ -1,0 +1,1000 @@
+// *************************************************************
+
+//NAME:          Copy file and folder
+
+//PURPOSE:       Copy exchange server file and folder to S3 storage drive
+
+//PARAMETERS:    Source(Exchange server path),Destination(S3 drive path) 
+
+//RETURNS:       Nothing
+
+//*************************************************************
+using Aspose.Email.Storage.Pst;
+using Microsoft.Exchange.WebServices.Data;
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Text;
+using System.Threading.Tasks;
+using Microsoft.Office.Interop.Excel;
+using System.Runtime.InteropServices;
+
+namespace ExchangeServerMigration
+{
+    public class MigrateFileAndFolder
+    {
+        public Folder foFolder;
+        ErrorLog errorLog;
+        public PropertySet propset = new PropertySet(BasePropertySet.FirstClassProperties, FolderSchema.Permissions);
+        public static ExtendedPropertyDefinition PR_Folder_Path = new ExtendedPropertyDefinition(26293, Microsoft.Exchange.WebServices.Data.MapiPropertyType.String);
+        public static PropertySet psPropSet = new PropertySet(BasePropertySet.FirstClassProperties) { PR_Folder_Path };
+        public static string folderOwner = string.Empty;
+        //DataTable userpermission = new DataTable();
+        //DataTable folderName = new DataTable();
+        //SP.Folder curFolder = null;
+        //ArrayList afolderName = new ArrayList();
+        public static string folderpath = string.Empty;
+        public static string folderpathtemp = string.Empty;
+        public static string temp = string.Empty;
+        public static string tempFolderName = string.Empty;
+        //string localFolderName = @"H:\ExchangerSeverata";
+        RemoveSpecialChar removeSpecialChar;
+        UploadToS3 uploadToS3;
+        ReportProperties reportProperties;
+        MigrationReportExcel migrationReportExcel;
+
+        public void Migrate()
+        {
+            string localFolderName = ConfigurationSettings.AppSettings["SourcePath"].ToString();
+            string PstFolderName = ConfigurationSettings.AppSettings["DestinationPath"].ToString();
+            string clientExcelFile = ConfigurationSettings.AppSettings["ClientExcelFile"].ToString();
+            string clientExcelFileForUpdate = ConfigurationSettings.AppSettings["ClientExcelFileForUpdate"].ToString();
+            try
+            {
+                var service = new ExchangeService(ExchangeVersion.Exchange2010);
+                service.Url = new Uri("");
+                service.Credentials = new WebCredentials(ConfigurationSettings.AppSettings[""].ToString(), ConfigurationSettings.AppSettings[""].ToString());
+                migrationReportExcel = new MigrationReportExcel();
+
+                Application xlAppReadClient = new Application();
+                Workbook xlWorkBookClient = xlAppReadClient.Workbooks.Open(clientExcelFile);
+                Worksheet xlWorkSheetClient = (Worksheet)xlWorkBookClient.Worksheets.get_Item(1);
+
+                Range xlRangeClient = xlWorkSheetClient.UsedRange;
+                int totalRows = xlRangeClient.Rows.Count;
+                for (int rowCount = 6101; rowCount <=6200; rowCount++)
+                {
+                    // string subFolder = "Lindley v Allstate - Gould";
+                    //  string FolderPathExcel = @"\Brand Applications\Ivantage Group\Ivantage Claims Admin\Don - New\Litigation\Lindley v Allstate - Gould";
+                    //string subFolder = Convert.ToString((xlRangeClient.Cells[rowCount, 25] as Range).Text);
+                    string FolderPathExcel = @Convert.ToString((xlRangeClient.Cells[rowCount, 5] as Range).Text);
+                    string[] splitPath = FolderPathExcel.Split('\\');
+                    string subFolder = splitPath[splitPath.Length - 1].ToString();
+
+                    // bool rowExist = migrationReportExcel.ReadExcelFile(FolderPathExcel, subFolder);
+                    bool rowExist = false;
+                    if (rowExist == false)
+                    {
+                        string FolderPath = FolderPathExcel.Remove(0, 1);
+                        FolderId folderid = new FolderId(WellKnownFolderName.PublicFoldersRoot);
+
+                        string ownerNameWithCommaseparated = Convert.ToString((xlRangeClient.Cells[rowCount, 54] as Range).Text);
+                        // string ownerNameWithCommaseparated = "cdrzf";
+                        Folder tfTargetFolder = Folder.Bind(service, folderid);
+                        PropertySet psPropset = new PropertySet(BasePropertySet.FirstClassProperties);
+                        String[] fldArray = FolderPath.Split('\\');
+                        for (Int32 lint = 0; lint < fldArray.Length; lint++)
+                        {
+                            FolderView fvFolderView = new FolderView(1);
+                            fvFolderView.PropertySet = psPropset;
+                            SearchFilter SfSearchFilter = new SearchFilter.IsEqualTo(FolderSchema.DisplayName, fldArray[lint]);
+                            FindFoldersResults findFolderResults = service.FindFolders(tfTargetFolder.Id, SfSearchFilter, fvFolderView);
+                            if (findFolderResults.TotalCount > 0)
+                            {
+                                foreach (Folder folder in findFolderResults.Folders)
+                                {
+                                    if (folder.DisplayName == subFolder)
+                                    {
+                                        removeSpecialChar = new RemoveSpecialChar();
+                                        uploadToS3 = new UploadToS3();
+                                        string subfolderpath = string.Empty;
+                                        string newSubfolderpath = string.Empty;
+                                        string subfolderpathPst = string.Empty;
+                                        string newSubfolderpathPst = string.Empty;
+                                        string pstName = string.Empty;
+                                        //string localFolderName = ConfigurationSettings.AppSettings["SourcePath"].ToString();
+                                        //string PstFolderName = ConfigurationSettings.AppSettings["DestinationPath"].ToString();
+                                        Folder foFolder=null;
+                                        try
+                                        {
+                                            foFolder = Folder.Bind(service, folder.Id, psPropSet);
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            errorLog = new ErrorLog();
+                                            errorLog.WriteErrorLog(ex);
+                                            if (ex.Message == "Data is corrupt.")
+                                            {
+                                                reportProperties = new ReportProperties
+                                                {
+                                                    ExchangerServerFolderPath = FolderPathExcel,
+                                                    ExchangerServerFolderName = subFolder,
+                                                    ExchangerServerFolderitem = "",
+                                                    ExchangerServerDownloadStatus = "Data is corrupt.",
+                                                    TransitLocationNewFolderName = "",
+                                                    TransitLocationPSTCreatedStatus = "Not Completed",
+                                                    TransitLocationPSTSize = "",
+                                                    TransitLocationIsMoreThan5GBNew = "",
+                                                    S3LocationFolderName = "",
+                                                    S3LocationFolderPath = "",
+                                                    S3LocationPSTName = "",
+                                                    S3LocationStatus = "",
+                                                    DateTime = Convert.ToString(DateTime.Now)
+
+                                                };
+                                                migrationReportExcel.AddReportDataInXLSX(reportProperties);
+                                                migrationReportExcel.UpdateClientExcel(clientExcelFileForUpdate, rowCount, "Data is corrupt.");
+                                                // break;
+                                                goto mainloop;
+                                            }
+                                        }
+
+                                        object fpPath = null;
+                                        foFolder.TryGetProperty(PR_Folder_Path, out fpPath);
+                                        string fpPathString = Encoding.Unicode.GetString(removeSpecialChar.HexStringToByteArray(BitConverter.ToString(UnicodeEncoding.Unicode.GetBytes((String)fpPath)).Replace("FE-FF", "5C-00").Replace("-", "")));
+                                        fpPathString = fpPathString.Substring(1).Replace(subFolder, "");
+                                        var pPathString = removeSpecialChar.RemoveSpecialCharactersForfodlerpath(fpPathString);
+                                        var nfpPathString = System.IO.Path.Combine(localFolderName, pPathString);
+                                        var nfpstPathString = System.IO.Path.Combine(PstFolderName, pPathString);
+                                        //if (!System.IO.Directory.Exists(nfpPathString))
+                                        //{
+                                        //    System.IO.Directory.CreateDirectory(nfpPathString);
+                                        //}
+                                        //if (!System.IO.Directory.Exists(nfpstPathString))
+                                        //{
+                                        //    System.IO.Directory.CreateDirectory(nfpstPathString);
+                                        //}
+                                        string localFilePath = string.Empty;
+                                        string subject = string.Empty;
+                                        string pathString = string.Empty;
+                                        string LocalFolderPath = string.Empty;
+                                        string receivedDate = string.Empty;
+                                        //   int itemCnt = 0;
+                                        int pageSize = int.MaxValue;
+                                        int offset = 0;
+                                        string strfolderowner = string.Empty;
+                                        string subfolderpath1 = string.Empty;
+                                        string mainfolderName = string.Empty;
+                                        var PathString = removeSpecialChar.Remove(subFolder);
+
+                                        int itemCnt = 0;
+
+
+                                        // subfolderpath = System.IO.Path.Combine(nfpPathString, PathString);
+                                        newSubfolderpath = System.IO.Path.Combine(@localFolderName, PathString);
+
+                                        //System.IO.Directory.CreateDirectory(subfolderpath);
+                                        if (!System.IO.Directory.Exists(newSubfolderpath))
+                                        {
+                                            System.IO.Directory.CreateDirectory(newSubfolderpath);
+                                        }
+                                        bool more = true;
+                                        ItemView view = new ItemView(pageSize, offset, OffsetBasePoint.Beginning);
+                                        FindItemsResults<Item> findResults;
+                                        int ItemCount = 0;
+
+
+                                        while (more)
+                                        {
+                                            findResults = service.FindItems(folder.Id, view);
+                                            foreach (var item in findResults.Items)
+                                            {
+                                                item.Load(new PropertySet(ItemSchema.MimeContent));
+                                                MimeContent mimcon = item.MimeContent;
+                                                item.Load(new PropertySet(ItemSchema.Subject));
+                                                subject = item.Subject;
+                                                subject = item.Subject == null || item.Subject == "" ? "" : removeSpecialChar.Remove(subject);
+                                                string line = subject + "_" + itemCnt + "</br>";
+                                                if (subject.Length > 116)
+                                                {
+                                                    subject = subject.Substring(0, 115);
+                                                }
+                                                FileStream fStream = new FileStream(@newSubfolderpath + "\\" + subject + "_" + itemCnt + ".eml", FileMode.Create);
+                                                fStream.Write(mimcon.Content, 0, mimcon.Content.Length);
+                                                fStream.Close();
+                                                itemCnt++;
+                                                ItemCount++;
+
+
+                                                // fStream  
+                                            }
+                                            more = findResults.MoreAvailable;
+                                            if (more)
+                                            {
+                                                view.Offset += 1000;
+                                            }
+                                        }
+                                        int a = ItemCount;
+                                        // Create new PST
+                                        subfolderpathPst = System.IO.Path.Combine(nfpstPathString, PathString);
+                                        //if (!System.IO.Directory.Exists(subfolderpathPst))
+                                        //{
+                                        //    System.IO.Directory.CreateDirectory(subfolderpathPst);
+                                        //}
+                                        newSubfolderpathPst = System.IO.Path.Combine(@PstFolderName, PathString);
+                                        if (!System.IO.Directory.Exists(newSubfolderpathPst))
+                                        {
+                                            System.IO.Directory.CreateDirectory(newSubfolderpathPst);
+                                        }
+                                        string PSTSizeGreaterTo5GB = "No";
+                                        //pstName = PathString + ".pst";
+                                        //   mainfolderName = PathString;
+                                        //PersonalStorage pst = PersonalStorage.Create(@subfolderpathPst + "/" + pstName, FileFormatVersion.Unicode);
+
+                                        //// Add new folder "Inbox"
+                                        //pst.RootFolder.AddSubFolder(PathString);
+                                        //// Select the "Inbox" folder
+                                        //FolderInfo addFolder = pst.RootFolder.GetSubFolder(PathString);
+                                        ////adding file to PST
+                                        int loopVariable = 1;
+                                        FileInfo fileInfoObj;
+                                        FolderInfo addFolder = null;
+                                        PersonalStorage pst = null;
+                                        int pstFileNumber = 1;
+                                        foreach (String file in Directory.GetFiles(@newSubfolderpath))
+                                        {
+                                            //add the file
+
+                                            if (loopVariable == 1)
+                                            {
+                                                pst = PersonalStorage.Create(@newSubfolderpathPst + "/" + "part" + pstFileNumber + ".pst", FileFormatVersion.Unicode);
+                                                pst.RootFolder.AddSubFolder(PathString);
+                                                addFolder = pst.RootFolder.GetSubFolder(PathString);
+                                                addFolder.AddFile(@newSubfolderpath + "/" + Path.GetFileName(file), null);
+                                                loopVariable++;
+
+                                            }
+                                            else
+                                            {
+                                                addFolder.AddFile(@newSubfolderpath + "/" + Path.GetFileName(file), null);
+                                                fileInfoObj = new FileInfo(@newSubfolderpathPst + "/" + "part" + pstFileNumber + ".pst");
+                                                if (fileInfoObj.Length >= 4831838208)
+                                                {
+                                                    PSTSizeGreaterTo5GB = "Yes";
+                                                    loopVariable--;
+                                                    pstFileNumber++;
+                                                    pst.Dispose();
+
+                                                }
+
+                                            }
+
+
+
+                                        }
+                                        if (pst != null)
+                                            pst.Dispose();
+
+
+                                        long pstfilesizeInt = 0;
+                                        string[] pstfiles = Directory.GetFiles(@newSubfolderpathPst);
+                                        foreach (string file in pstfiles)
+                                        {
+                                            FileInfo info = new FileInfo(file);
+
+                                            pstfilesizeInt = pstfilesizeInt + (long)info.Length;
+
+                                        }
+                                        // string PSTSizeGreaterTo5GB = "No";
+                                        string pstfilesize = FileFolderSizeAndFileFormatter.FormatSize(pstfilesizeInt);
+                                        // pst.Dispose();
+                                        //split PST if size >5gb
+                                        //if (pstfilesizeInt > 5368709120)
+                                        //{
+                                        //    string PSTFilePath = @subfolderpathPst + "\\" + pstName;
+                                        //    using (PersonalStorage pst2 = PersonalStorage.FromFile(PSTFilePath))
+                                        //    {
+                                        //        PSTSizeGreaterTo5GB = "Yes";
+                                        //        pst2.SplitInto(5368709120, @subfolderpathPst);
+                                        //        if (File.Exists(Path.Combine(@subfolderpathPst, pstName)))
+                                        //        {
+                                        //            // If file found, delete it  
+
+                                        //            File.Delete(Path.Combine(@subfolderpathPst, pstName));
+                                        //            // Console.WriteLine("File deleted.");
+                                        //        }
+                                        //    }
+                                        //}
+
+                                        //adding PST file to S3
+                                        // 
+                                        //string ownerNameWithCommaseparated = Convert.ToString((xlRange.Cells[rowCount, 54] as Range).Text);
+
+                                        String[] ownerName = ownerNameWithCommaseparated.Split(',');
+                                        string filePath = string.Empty;
+                                        string s3PSTPath = string.Empty;
+                                        string pstStatus = string.Empty;
+                                        string pstNameForReport = string.Empty;
+                                        for (Int32 i = 0; i < ownerName.Length; i++)
+                                        {
+                                            if (PSTSizeGreaterTo5GB == "Yes")
+                                            {
+                                                string[] pstfilesList = Directory.GetFiles(@newSubfolderpathPst);
+                                                string commaSeparatedPSTName = string.Empty;
+                                                int pstNumber = 1;
+                                                foreach (string file in pstfilesList)
+                                                {
+                                                    FileInfo info = new FileInfo(file);
+
+                                                    filePath = @newSubfolderpathPst + "\\" + info.Name;
+                                                    string newPSTName = ownerName[i] + "_" + removeSpecialChar.Remove(subFolder) + "_" + pstNumber + ".pst";
+                                                    commaSeparatedPSTName = commaSeparatedPSTName + newPSTName + ",";
+                                                    s3PSTPath = nfpstPathString + ownerName[i] + "_" + removeSpecialChar.Remove(subFolder) + "\\" + newPSTName;
+                                                    pstStatus = uploadToS3.Upload(filePath, s3PSTPath);
+                                                    pstNumber++;
+
+                                                }
+                                                pstNameForReport = commaSeparatedPSTName;
+                                            }
+                                            else
+                                            {
+                                                pstNameForReport = ownerName[i] + "_" + removeSpecialChar.Remove(subFolder) + "_" + ".pst";
+                                                filePath = @newSubfolderpathPst + "\\" + "part1.pst";
+                                                s3PSTPath = nfpstPathString + ownerName[i] + "_" + removeSpecialChar.Remove(subFolder) + "\\" + pstNameForReport;
+
+                                                if (File.Exists(Path.Combine(@newSubfolderpathPst, "part1.pst")))
+                                                {
+                                                    pstStatus = uploadToS3.Upload(filePath, s3PSTPath);
+                                                }
+                                                else
+                                                {
+
+                                                    pstStatus = "Item count Zero in EWS Folder. Please verify with ADMIN";
+                                                }
+
+
+                                            }
+                                            reportProperties = new ReportProperties
+                                            {
+                                                ExchangerServerFolderPath = FolderPathExcel,
+                                                ExchangerServerFolderName = subFolder,
+                                                ExchangerServerFolderitem = Convert.ToString(ItemCount),
+                                                ExchangerServerDownloadStatus = "Completed",
+                                                TransitLocationNewFolderName = PathString,
+                                                TransitLocationPSTCreatedStatus = "Completed",
+                                                TransitLocationPSTSize = pstfilesize,
+                                                TransitLocationIsMoreThan5GBNew = PSTSizeGreaterTo5GB,
+                                                S3LocationFolderName = ownerName[i] + "_" + removeSpecialChar.Remove(subFolder),
+                                                S3LocationFolderPath = (nfpstPathString + ownerName[i] + "_" + removeSpecialChar.Remove(subFolder)).Replace("\\", "/").Remove(0, 3).Replace("PSTFile", "").Remove(0, 1),
+                                                S3LocationPSTName = pstNameForReport,
+                                                S3LocationStatus = pstStatus,
+                                                DateTime = Convert.ToString(DateTime.Now)
+
+                                            };
+                                            
+                                           migrationReportExcel.AddReportDataInXLSX(reportProperties);
+                                            migrationReportExcel.UpdateClientExcel(clientExcelFileForUpdate, rowCount, "Completed");
+                                        }
+
+                                        //  // string pstStatus = "WaitingForActivation";
+                                        //  //Remove Exchange fer file and PST file to over local server
+                                        //  //Remove Exchange server downloaded all file form folder
+                                        //string[] files = Directory.GetFiles(@newSubfolderpath);
+                                        //foreach (string file in files)
+                                        //{
+
+                                        //    File.Delete(file);
+
+                                        //}
+
+                                        System.IO.DirectoryInfo diEx = new DirectoryInfo(@localFolderName);
+
+                                        foreach (FileInfo file in diEx.GetFiles())
+                                        {
+                                            file.Delete();
+                                        }
+                                        foreach (DirectoryInfo dir in diEx.GetDirectories())
+                                        {
+                                            dir.Delete(true);
+                                        }
+                                        //delete PST File
+                                        //if (PSTSizeGreaterTo5GB == "No")
+                                        //{
+                                        //    if (File.Exists(Path.Combine(@subfolderpathPst, "part1.pst")))
+                                        //    {
+                                        //        // If file found, delete it  
+
+                                        //        File.Delete(Path.Combine(@subfolderpathPst, "part1.pst"));
+                                        //        // Console.WriteLine("File deleted.");
+                                        //    }
+                                        //}
+                                        //else
+                                        //{
+                                        //    string[] PSTFiles = Directory.GetFiles(@subfolderpathPst);
+                                        //    foreach (string file in files)
+                                        //    {
+
+                                        //        File.Delete(file);
+
+                                        //    }
+                                        //}
+
+                                        System.IO.DirectoryInfo diPST = new DirectoryInfo(@PstFolderName);
+
+                                        foreach (FileInfo file in diPST.GetFiles())
+                                        {
+                                            file.Delete();
+                                        }
+                                        foreach (DirectoryInfo dir in diPST.GetDirectories())
+                                        {
+                                            dir.Delete(true);
+                                        }
+                                        //  string ExSFolderPath = Path.Combine(nfpPathString, testFolder.DisplayName).Remove(0, 3).Replace("ExchangeServerData", "");
+                                        //  string s3Path = Path.Combine(nfpstPathString, ownerName + "_" + PathString).Remove(0, 3).Replace("\\", "/").Replace("PSTFile", "");
+
+                                        //migrationTable.Rows.Add(ExSFolderPath, testFolder.DisplayName, findResults.Items.Count, "Success", mainfolderName, "Success", pstfilesize, "", mainfolderName, s3Path, pstName, pstStatus, DateTime.Now);
+                                        }
+                                    else
+                                    {
+                                        tfTargetFolder = folder;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                tfTargetFolder = null;
+                                reportProperties = new ReportProperties
+                                {
+                                    ExchangerServerFolderPath = FolderPathExcel,
+                                    ExchangerServerFolderName = subFolder,
+                                    ExchangerServerFolderitem = "",
+                                    ExchangerServerDownloadStatus = "Folder Not found",
+                                    TransitLocationNewFolderName = "",
+                                    TransitLocationPSTCreatedStatus = "Not Completed",
+                                    TransitLocationPSTSize = "",
+                                    TransitLocationIsMoreThan5GBNew = "",
+                                    S3LocationFolderName = "",
+                                    S3LocationFolderPath = "",
+                                    S3LocationPSTName = "",
+                                    S3LocationStatus = "",
+                                    DateTime = Convert.ToString(DateTime.Now)
+
+                                };
+                                migrationReportExcel.AddReportDataInXLSX(reportProperties);
+                                migrationReportExcel.UpdateClientExcel(clientExcelFileForUpdate, rowCount,"Folder Not found");
+                                // break;
+                                goto mainloop;
+                            }
+                        }
+                        //if (tfTargetFolder != null)
+                        //{
+                        //      return tfTargetFolder;
+                        //}
+                        //else
+                        //{
+                        //    throw new Exception("Folder Not found");
+                        //}
+                    }
+                   
+                   mainloop:
+                    continue;
+                }
+
+                xlWorkBookClient.Close();
+                xlAppReadClient.Quit();
+
+                Marshal.ReleaseComObject(xlWorkSheetClient);
+                Marshal.ReleaseComObject(xlWorkBookClient);
+                Marshal.ReleaseComObject(xlAppReadClient);
+            }
+            catch (Exception ex)
+            {
+                errorLog = new ErrorLog();
+                errorLog.WriteErrorLog(ex);
+               
+                
+            }
+        }
+
+
+
+        // In class RemoveSpecialChar add method
+
+
+
+    }
+}
+///second file
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace ExchangeServerMigration
+{
+   public static class FileFolderSizeAndFileFormatter
+    {
+
+        // Load all suffixes in an array  
+        static readonly string[] suffixes =
+        { "Bytes", "KB", "MB", "GB", "TB", "PB" };
+        public static string FormatSize(long bytes)
+        {
+            int counter = 0;
+            decimal number = (decimal)bytes;
+            while (Math.Round(number / 1024) >= 1)
+            {
+                number = number / 1024;
+                counter++;
+            }
+            return string.Format("{0:n1}{1}", number, suffixes[counter]);
+        }
+        public static decimal Size(Int64 bytes)
+        {
+            int counter = 0;
+            decimal number = (decimal)bytes;
+            while (Math.Round(number / 1024) >= 1)
+            {
+                number = number / 1024;
+                counter++;
+            }
+            return number;
+        }
+
+        public static long DirSize1(DirectoryInfo dir)
+        {
+            return dir.GetFiles().Sum(fi => fi.Length) +
+                   dir.GetDirectories().Sum(di => DirSize1(di));
+        }
+        //public static async Task<long> DirSize(DirectoryInfo dirInfo)
+        //{
+        //    long dirSize = await Task.Run(() => dirInfo.EnumerateFiles("*", SearchOption.AllDirectories).Sum(file => file.Length));
+        //    return dirSize;
+        //}
+        public static string DirSizeWithSuffixes(DirectoryInfo dirInfo)
+        {
+            long dirSize = dirInfo.EnumerateFiles("*", SearchOption.AllDirectories).Sum(file => file.Length);
+            string size = FormatSize(dirSize);
+            return size;
+        }
+
+        public static  long DirSizeValue(DirectoryInfo dirInfo)
+        {
+            long dirSize = dirInfo.EnumerateFiles("*", SearchOption.AllDirectories).Sum(file => file.Length);
+            var size = Size(dirSize);
+            return (long)size;
+        }
+
+        
+    }
+}
+//thirdfile
+using Microsoft.Office.Interop.Excel;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading.Tasks;
+
+
+namespace ExchangeServerMigration
+{
+    public class MigrationReportExcel
+    {
+        public string filePath = GetPath();
+        public static string GetPath()
+        {
+            string migrationReportFileName = "MigrationReport.xlsx";
+            string migrationReportFloderName = "\\MigrationReport\\";
+
+            // This will get the current WORKING directory (i.e. \bin\Debug)
+            string workingDirectory = Environment.CurrentDirectory;
+            // This will get the current PROJECT directory
+            string projectDirectory = Directory.GetParent(workingDirectory).Parent.FullName;
+            return Path.Combine(projectDirectory + migrationReportFloderName, migrationReportFileName);
+
+        }
+        private void CreateExcelFile()
+        {
+            Application xlApp = new Application();
+
+            if (xlApp == null)
+            {
+
+                return;
+            }
+
+            object misValue = System.Reflection.Missing.Value;
+
+            Workbook xlWorkBook = xlApp.Workbooks.Add(misValue);
+            Worksheet xlWorkSheet = (Worksheet)xlWorkBook.Worksheets.get_Item(1);
+
+
+            xlWorkSheet.Cells[1, 1] = "Exchanger Server Folder Path";
+            xlWorkSheet.Cells[1, 2] = "Exchanger Server Folder Name";
+            xlWorkSheet.Cells[1, 3] = "Exchanger Server Folder item";
+            xlWorkSheet.Cells[1, 4] = "Exchanger Server Download Status";
+            xlWorkSheet.Cells[1, 5] = "Transit Location New Folder Name";
+            xlWorkSheet.Cells[1, 6] = "Transit Location PST Created Status";
+            xlWorkSheet.Cells[1, 7] = "Transit Location PST Size";
+            xlWorkSheet.Cells[1, 8] = "Transit Location Is More than 5GB New";
+            xlWorkSheet.Cells[1, 9] = "S3 Location Folder Name";
+            xlWorkSheet.Cells[1, 10] = "S3 Location Folder Path";
+            xlWorkSheet.Cells[1, 11] = "S3 Location PST Name";
+            xlWorkSheet.Cells[1, 12] = "S3 Location Status";
+            xlWorkSheet.Cells[1, 13] = "Date & Time";
+
+            xlWorkBook.SaveAs(filePath, XlFileFormat.xlOpenXMLWorkbook, misValue, misValue, misValue, misValue,
+                XlSaveAsAccessMode.xlExclusive, misValue, misValue, misValue, misValue, misValue);
+            xlApp.Columns.AutoFit();
+            xlApp.DisplayAlerts = false;
+            xlWorkBook.Close();
+            xlApp.Quit();
+
+            Marshal.ReleaseComObject(xlWorkSheet);
+            Marshal.ReleaseComObject(xlWorkBook);
+            Marshal.ReleaseComObject(xlApp);
+
+
+        }
+        private void AddNewRowsToExcelFile(ReportProperties reportProperties)
+        {
+            Application xlApp = new Application();
+
+            Workbook xlWorkBook = xlApp.Workbooks.Open(filePath, 0, false, 5, "", "", false,
+                 XlPlatform.xlWindows, "", true, false, 0, true, false, false);
+            Worksheet xlWorkSheet = (Worksheet)xlWorkBook.Worksheets.get_Item(1);
+
+            Range xlRange = xlWorkSheet.UsedRange;
+            int rowNumber = xlRange.Rows.Count + 1;
+
+            //foreach (Employee emp in empList)
+            //{
+            xlWorkSheet.Cells[rowNumber, 1] = reportProperties.ExchangerServerFolderPath;
+            xlWorkSheet.Cells[rowNumber, 2] = reportProperties.ExchangerServerFolderName;
+            xlWorkSheet.Cells[rowNumber, 3] = reportProperties.ExchangerServerFolderitem;
+            xlWorkSheet.Cells[rowNumber, 4] = reportProperties.ExchangerServerDownloadStatus;
+            xlWorkSheet.Cells[rowNumber, 5] = reportProperties.TransitLocationNewFolderName;
+            xlWorkSheet.Cells[rowNumber, 6] = reportProperties.TransitLocationPSTCreatedStatus;
+            xlWorkSheet.Cells[rowNumber, 7] = reportProperties.TransitLocationPSTSize;
+            xlWorkSheet.Cells[rowNumber, 8] = reportProperties.TransitLocationIsMoreThan5GBNew;
+            xlWorkSheet.Cells[rowNumber, 9] = reportProperties.S3LocationFolderName;
+            xlWorkSheet.Cells[rowNumber, 10] = reportProperties.S3LocationFolderPath;
+            xlWorkSheet.Cells[rowNumber, 11] = reportProperties.S3LocationPSTName;
+            xlWorkSheet.Cells[rowNumber, 12] = reportProperties.S3LocationStatus;
+            xlWorkSheet.Cells[rowNumber, 13] = reportProperties.DateTime;
+
+
+            //  }
+
+            // Disable file override confirmaton message  
+            xlApp.Columns.AutoFit();
+            xlApp.DisplayAlerts = false;
+
+            xlWorkBook.SaveAs(filePath, XlFileFormat.xlOpenXMLWorkbook,
+                Missing.Value, Missing.Value, Missing.Value, Missing.Value, XlSaveAsAccessMode.xlNoChange,
+                XlSaveConflictResolution.xlLocalSessionChanges, Missing.Value, Missing.Value,
+                Missing.Value, Missing.Value);
+            xlWorkBook.Close();
+            xlApp.Quit();
+
+            Marshal.ReleaseComObject(xlWorkSheet);
+            Marshal.ReleaseComObject(xlWorkBook);
+            Marshal.ReleaseComObject(xlApp);
+
+        }
+
+       
+
+        public void AddReportDataInXLSX(ReportProperties reportProperties)
+        {
+
+            string path = GetPath();
+            if (File.Exists(path))
+            {
+                AddNewRowsToExcelFile(reportProperties);
+            }
+            else
+            {
+                CreateExcelFile();
+                AddNewRowsToExcelFile(reportProperties);
+            }
+        }
+        public Boolean ReadExcelFile(string path, string folderName)
+        {
+            Boolean result = false;
+            // string  path = GetPath();
+            if (File.Exists(GetPath()))
+            {
+
+
+                Application xlApp = new Application();
+                Workbook xlWorkBook = xlApp.Workbooks.Open(filePath);
+                Worksheet xlWorkSheet = (Worksheet)xlWorkBook.Worksheets.get_Item(1);
+
+                Range xlRange = xlWorkSheet.UsedRange;
+                int totalRows = xlRange.Rows.Count;
+                int totalColumns = xlRange.Columns.Count;
+
+                int excelrow = 0;
+
+                for (int rowCount = 2; rowCount <= totalRows; rowCount++)
+                {
+                    string excelPath = @Convert.ToString((xlRange.Cells[rowCount, 1] as Range).Text);
+                    string excelFolderName = Convert.ToString((xlRange.Cells[rowCount, 2] as Range).Text);
+                    string excelStatusEx = Convert.ToString((xlRange.Cells[rowCount, 4] as Range).Text);
+                    string excelStatusTL = Convert.ToString((xlRange.Cells[rowCount, 6] as Range).Text);
+                    string excelStatus3 = Convert.ToString((xlRange.Cells[rowCount, 12] as Range).Text);
+                    if (excelStatus3 == "Item count Zero in EWS Folder. Please verify with ADMIN")
+                    {
+                        excelStatus3 = "Successfully uploaded into s3 bucket";
+                    }
+                    if (excelStatus3 == "")
+                    {
+                        excelStatus3 = "Successfully uploaded into s3 bucket";
+                    }
+                    if (excelPath == path && excelFolderName == folderName && excelStatusEx == "Completed" && excelStatusTL == "Completed" && excelStatus3 == "Successfully uploaded into s3 bucket" )
+                    {
+                      
+                        result = true;
+                        break;
+
+                    }
+
+                }
+
+                xlWorkBook.Close();
+                xlApp.Quit();
+
+                Marshal.ReleaseComObject(xlWorkSheet);
+                Marshal.ReleaseComObject(xlWorkBook);
+                Marshal.ReleaseComObject(xlApp);
+            }
+            return result;
+
+        }
+        public void Openfile()
+        {
+            string path = GetPath();
+            if (File.Exists(path))
+            {
+                Process.Start(path);
+            }
+        }
+
+
+
+        public  void UpdateClientExcel(string filePath,int rowNumber, string Status)
+
+        {
+            Application xlApp = new Application();
+
+            Workbook xlWorkBook = xlApp.Workbooks.Open(filePath, 0, false, 5, "", "", false,
+                 Microsoft.Office.Interop.Excel.XlPlatform.xlWindows, "", true, false, 0, true, false, false);
+            Worksheet xlWorkSheet = (Worksheet)xlWorkBook.Worksheets.get_Item(1);
+
+            Range xlRange = xlWorkSheet.UsedRange;
+            //int rowNumber = xlRange.Rows.Count + 1;
+            //int cellNumber = xlRange.Columns.Count + 1;
+
+
+            xlWorkSheet.Cells[rowNumber, 54] = Status;
+         
+
+
+            // Disable file override confirmaton message  
+            xlApp.DisplayAlerts = false;
+            xlWorkBook.SaveAs(filePath, XlFileFormat.xlOpenXMLWorkbook,
+                Missing.Value, Missing.Value, Missing.Value, Missing.Value, XlSaveAsAccessMode.xlNoChange,
+                XlSaveConflictResolution.xlLocalSessionChanges, Missing.Value, Missing.Value,
+                Missing.Value, Missing.Value);
+            xlWorkBook.Close();
+            xlApp.Quit();
+
+            Marshal.ReleaseComObject(xlWorkSheet);
+            Marshal.ReleaseComObject(xlWorkBook);
+            Marshal.ReleaseComObject(xlApp);
+
+        }
+    }
+
+    public class ReportProperties
+    {
+
+        public string ExchangerServerFolderPath { get; set; }
+
+
+        public string ExchangerServerFolderName { get; set; }
+
+
+        public string ExchangerServerFolderitem { get; set; }
+
+
+        public string ExchangerServerDownloadStatus { get; set; }
+
+
+        public string TransitLocationNewFolderName { get; set; }
+
+
+        public string TransitLocationPSTCreatedStatus { get; set; }
+
+        public string TransitLocationPSTSize { get; set; }
+
+        public string TransitLocationIsMoreThan5GBNew { get; set; }
+
+        public string S3LocationFolderName { get; set; }
+
+        public string S3LocationFolderPath { get; set; }
+
+        public string S3LocationPSTName { get; set; }
+
+        public string S3LocationStatus { get; set; }
+
+        public string DateTime { get; set; }
+
+
+    }
+}
+//fourth file
+// *************************************************************
+
+//NAME:          Replace
+
+//PURPOSE:       Replace special characters to underscore
+
+//PARAMETERS:    File or folder name 
+
+//RETURNS:       New file or folder Name
+
+//*************************************************************
+
+using System;
+using System.Text;
+using System.Text.RegularExpressions;
+
+namespace ExchangeServerMigration
+{
+    public class RemoveSpecialChar
+    {
+        #region Special characters  Remove funtion
+        public string Remove(string fileName)
+        {
+            string newName= Regex.Replace(input: fileName, pattern: @"[^.0-9a-zA-Z]+", replacement: "_");
+            return newName;
+        }
+
+        public string RemoveSpecialCharactersForfodlerpath(string str)
+        {
+            StringBuilder sb = new StringBuilder();
+            //try
+            //{
+            if (str != null && str != "")
+            {
+                foreach (char c in str)
+                {
+                    if (c == '#' || c == '%' || c == '&' || c == '*' || c == ':' || c == '<' || c == '>' || c == '?' || c == '/' || c == '{' || c == '|' || c == '}' || c == '~' || c == '.' || c == '+' || c == ',' || c == '"')
+                    {
+                        sb.Append('_');
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+
+                }
+            }
+            return sb.ToString();
+            //}
+            //catch (Exception ex)
+            //{
+            //    throw ex;
+            //}
+        }
+
+        public Byte[] HexStringToByteArray(String HexString)
+        {
+            Byte[] ByteArray = new Byte[HexString.Length / 2];
+            for (int i = 0; i < HexString.Length; i += 2)
+            {
+                ByteArray[i / 2] = Convert.ToByte(HexString.Substring(i, 2), 16);
+            }
+            return ByteArray;
+        }
+        #endregion
+
+    }
+}
+//fiftyh file
+// *************************************************************
+
+//NAME:          Scality S3
+
+//PURPOSE:        Connect to S3  
+
+//PARAMETERS:   
+
+//RETURNS:       
+
+//*************************************************************
+using Amazon.S3;
+using Amazon.S3.Model;
+using Amazon.S3.Transfer;
+using System;
+using System.IO;
+using System.Threading.Tasks;
+
+namespace ExchangeServerMigration
+{
+    public class UploadToS3
+    {
+
+        private static IAmazonS3 s3Client;
+        private static string bucketName = "pfretentionexprt";
+        public void S3Config()
+        {
+            string accessKey = "";
+            string secretKey = "";
+
+            AmazonS3Config config = new AmazonS3Config();
+            config.ServiceURL = "";
+
+            s3Client = new AmazonS3Client(
+                    accessKey,//ConfigurationSettings.AppSettings["AccessKey"].ToString(), 
+                    secretKey,//ConfigurationSettings.AppSettings["SecretKey"].ToString(), 
+                    config
+                    );
+            // Upload();
+            //UploadFileAsync().Wait();
+            //UploadDirAsync().Wait();
+        }
+
+        public string Upload(string FilePath,string S3Path)
+        {
+            S3Config();
+            string itemSplit;
+            string KeyName;
+
+            //string[] filePaths = Directory.GetFiles(@"H:\PSTFile\", "*.pst", SearchOption.AllDirectories);
+            //foreach (string item in filePaths)
+            //{
+            itemSplit = FilePath;
+            KeyName = S3Path.Replace("\\", "/").Remove(0, 3).Replace("PSTFile", "").Remove(0, 1);
+            return sendMyFileToS3("pfretentionexprt", FilePath, KeyName);
+
+            // }
+        }
+
+
+        private string sendMyFileToS3(string bucketName, string FilePath, string KeyName)
+        {
+            try
+            {
+                var uploadRequest = new TransferUtilityUploadRequest
+                {
+                    FilePath = FilePath,
+                    BucketName = bucketName,
+                    Key = KeyName
+
+                };
+                var fileTransferUtility = new TransferUtility(s3Client);
+                fileTransferUtility.Upload(uploadRequest);
+                return "Successfully uploaded into s3 bucket";
+            }
+            catch (Exception ex)
+            {
+                return ex.InnerException.ToString();
+            }
+        }
+    }
+}
+
